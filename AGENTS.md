@@ -29,21 +29,18 @@ deployment target to support macOS 14+.
   (patched with `vtool` to target macOS 14.0)
 - **Output**: `.whl` files via `python setup.py bdist_wheel`
 
-## CI Status & Known Issues (as of commit 6d26fe3)
+## CI Status & Known Issues (as of commit 818d9f1)
 
 ### Resolved
 - **YAML indentation**: `merge-multiple` was outside `with:` block in download-artifact
 - **Rust x86_64 target**: mssql-rs has `rust-toolchain.toml` pinning Rust 1.90 which
   overrides `dtolnay/rust-toolchain@stable`. Fix: run `rustup target add x86_64-apple-darwin`
   inside `/tmp/mssql-rs` after cloning (so rustup picks up the 1.90 toolchain).
-
-### In Progress (next session to fix)
 - **`sql.h` not found**: C++ build fails because `unixodbc` is not installed on CI runner.
-  Fix is in `.github/workflows/build-macos-wheel.yml` line that reads
-  `brew install openssl` — needs to be `brew install openssl unixodbc`.
-  This fix has already been applied locally but NOT yet committed/pushed.
-- Matrix is currently limited to Python 3.13 only for CI testing. Restore to
-  `["3.10", "3.11", "3.12", "3.13"]` once CI passes.
+  Fixed by adding `unixodbc` to `brew install` step.
+- **`mssql_py_core/` not found**: `cd -` in CI returned to `/tmp/mssql-rs` instead of
+  `$GITHUB_WORKSPACE`. Fixed by using `cd "$GITHUB_WORKSPACE"`.
+- **Python matrix**: Restored to `["3.10", "3.11", "3.12", "3.13"]` after CI passed.
 
 ### Potential Future Issues
 - The CI runner has Xcode 15.4 (not 16.x like local). If C++ compiler errors occur,
