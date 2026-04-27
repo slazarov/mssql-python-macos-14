@@ -1,0 +1,91 @@
+name: Build macOS Wheels
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+
+jobs:
+  build:
+    runs-on: macos-14
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: /tmp/mssql-rs -> target
+          cache-on-failure: true
+
+      - name: Clone upstream mssql-python
+        run: git clone --depth 1 https://github.com/microsoft/mssql-python.git /tmp/mssql-python
+
+      - name: Apply macOS 14 patches
+        run: |
+          patch -d /tmp/mssql-python -p1 < patches/setup.py.patch
+          patch -d /tmp/mssql-python -p1 < patches/cmake.patch
+
+      - name: Install system dependencies
+        run: brew install unixodbc
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install setuptools wheel cmake pybind11 maturin
+        working-directory: /tmp/mssql-python
+
+      - name: Build mssql_py_core from source
+        run: scripts/build-mssql-py-core.sh /tmp/mssql-python
+
+      - name: Patch ODBC dylib deployment targets
+        run: scripts/patch-dylibs.sh /tmp/mssql-python
+
+      - name: Build C++ extension
+        run: |
+          cd mssql_python/pybind
+          chmod +x build.sh configure_dylibs.sh
+          ./build.sh
+        working-directory: /tmp/mssql-python
+
+      - name: Build wheel
+        run: python setup.py bdist_wheel
+        working-directory: /tmp/mssql-python
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: whl-cp${{ matrix.python-version }}
+          path: /tmp/mssql-python/dist/*.whl
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: build-${{ github.sha }}
+          name: macOS 14 Wheels (${{ github.sha }})
+          files: dist/*.whl
