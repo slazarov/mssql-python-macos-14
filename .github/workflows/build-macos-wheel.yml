@@ -49,11 +49,12 @@ jobs:
           rustup target add x86_64-apple-darwin
           cd mssql-py-core
           MACOSX_DEPLOYMENT_TARGET=14.0 maturin build --release --target universal2-apple-darwin --auditwheel=skip
-          cd -
+          cd "$GITHUB_WORKSPACE"
           pip install /tmp/mssql-rs/mssql-py-core/target/wheels/mssql_py_core-*.whl \
             --target /tmp/mssql_py_core_extract --no-deps
           mkdir -p mssql_py_core
           cp -r /tmp/mssql_py_core_extract/mssql_py_core/ mssql_py_core/
+          ls -la mssql_py_core/
 
       - name: Patch ODBC dylib deployment targets to macOS 14.0
         run: |
