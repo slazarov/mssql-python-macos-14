@@ -1,0 +1,19 @@
+--- a/setup.py
++++ b/setup.py
+@@ -34,7 +34,7 @@
+ 
+     elif sys.platform.startswith("darwin"):
+         # macOS platform - always use universal2
+-        return "universal2", "macosx_15_0_universal2"
++        return "universal2", "macosx_14_0_universal2"
+ 
+     elif sys.platform.startswith("linux"):
+         # Linux platform - use musllinux or manylinux tags based on architecture
+@@ -108,6 +108,7 @@
+         # Get platform info using consolidated function
+         arch, platform_tag = get_platform_info()
+         self.plat_name = platform_tag
++        self.plat_name_supplied = True
+         print(f"Setting wheel platform tag to: {self.plat_name} (arch: {arch})")
+ 
+     def run(self):
