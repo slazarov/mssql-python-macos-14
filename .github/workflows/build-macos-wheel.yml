@@ -1,0 +1,96 @@
+name: Build macOS Wheels
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".github/workflows/sync-upstream.yml"
+
+jobs:
+  build:
+    runs-on: macos-14
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: setup.py
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: /tmp/mssql-rs -> target
+          cache-on-failure: true
+
+      - name: Install system dependencies
+        run: brew install openssl
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install setuptools wheel cmake pybind11 maturin
+
+      - name: Build mssql_py_core from source
+        run: |
+          git clone https://github.com/microsoft/mssql-rs.git /tmp/mssql-rs
+          cd /tmp/mssql-rs/mssql-py-core
+          MACOSX_DEPLOYMENT_TARGET=14.0 maturin build --release --target universal2-apple-darwin --auditwheel=skip
+          cd -
+          pip install /tmp/mssql-rs/mssql-py-core/target/wheels/mssql_py_core-*.whl \
+            --target /tmp/mssql_py_core_extract --no-deps
+          mkdir -p mssql_py_core
+          cp -r /tmp/mssql_py_core_extract/mssql_py_core/ mssql_py_core/
+
+      - name: Patch ODBC dylib deployment targets to macOS 14.0
+        run: |
+          for f in mssql_python/libs/macos/arm64/lib/*.dylib mssql_python/libs/macos/x86_64/lib/*.dylib; do
+            tmpf=$(mktemp) && vtool -set-build-version macos 14.0 15.0 -output "$tmpf" "$f" && mv "$tmpf" "$f"
+            codesign --force --sign - "$f"
+          done
+
+      - name: Build C++ extension
+        run: |
+          cd mssql_python/pybind
+          chmod +x build.sh configure_dylibs.sh
+          ./build.sh
+
+      - name: Build wheel
+        run: python setup.py bdist_wheel
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: whl-cp${{ matrix.python-version }}
+          path: dist/*.whl
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+        merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.sha }}
+          name: macOS 14 Wheels (${{ github.sha }})
+          files: dist/*.whl

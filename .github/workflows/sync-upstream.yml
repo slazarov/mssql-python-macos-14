@@ -1,0 +1,24 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync from upstream
+        run: |
+          git remote add upstream https://github.com/microsoft/mssql-python.git
+          git fetch upstream main
+          git merge upstream/main --no-edit
+          git push origin main

@@ -76,6 +76,8 @@ add_definitions(-DPLATFORM_NAME="${PLATFORM_NAME}")
 # For macOS, always set universal build
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Build architectures for macOS" FORCE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version" FORCE)
+    message(STATUS "Setting macOS deployment target to 14.0")
     message(STATUS "Setting universal2 build for macOS (arm64 + x86_64)")
 endif()
 
