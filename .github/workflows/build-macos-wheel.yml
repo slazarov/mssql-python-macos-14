@@ -35,7 +35,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install system dependencies
-        run: brew install openssl
+        run: brew install openssl unixodbc
 
       - name: Install Python dependencies
         run: |
