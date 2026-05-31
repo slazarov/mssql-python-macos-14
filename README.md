@@ -8,14 +8,22 @@ This repo patches the platform tag and deployment target to support macOS 14+.
 
 ## How it works
 
-CI clones upstream at latest `main`, applies patches, builds `mssql_py_core` from
-source ([microsoft/mssql-rs](https://github.com/microsoft/mssql-rs)), patches ODBC
-dylibs, builds the C++ extension, and packages the wheel. No upstream source lives in
-this repo.
+CI resolves the latest official upstream
+[microsoft/mssql-python release](https://github.com/microsoft/mssql-python/releases),
+clones that tag, applies patches, builds `mssql_py_core` from source
+([microsoft/mssql-rs](https://github.com/microsoft/mssql-rs)), patches ODBC dylibs,
+builds the C++ extension, and packages the wheel. No upstream source lives in this
+repo.
 
 ## Downloads
 
-Wheels are published as [GitHub Releases](../../releases) on every push to `main`.
+Wheels are published as versioned [GitHub Releases](../../releases), such as
+`v1.8.0-macos14`. The workflow runs on a daily schedule and publishes only when the
+latest upstream release SHA has no matching macOS 14 release in this repo with all
+expected wheel assets.
+
+Manual runs are still available for rebuilds. By default they skip existing releases;
+set `force_rebuild=true` to rebuild and update the current upstream release.
 
 ## Patches applied
 
@@ -29,13 +37,15 @@ Wheels are published as [GitHub Releases](../../releases) on every push to `main
 ## Install
 
 ```bash
-pip install mssql_python-1.6.0-cp313-cp313-macosx_14_0_universal2.whl
+pip install mssql_python-<version>-cp313-cp313-macosx_14_0_universal2.whl
 ```
 
 ## Local build
 
 ```bash
-git clone --depth 1 https://github.com/microsoft/mssql-python.git /tmp/mssql-python
+UPSTREAM_TAG="$(curl -fsSL https://api.github.com/repos/microsoft/mssql-python/releases/latest \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"])')"
+git clone --depth 1 --branch "$UPSTREAM_TAG" https://github.com/microsoft/mssql-python.git /tmp/mssql-python
 patch -d /tmp/mssql-python -p1 < patches/setup.py.patch
 patch -d /tmp/mssql-python -p1 < patches/cmake.patch
 brew install unixodbc

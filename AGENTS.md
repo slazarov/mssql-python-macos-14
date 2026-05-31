@@ -7,9 +7,10 @@ Slim build repo that produces macOS 14 (Sonoma) compatible wheels from upstream
 to support macOS 14+.
 
 ## How It Works
-CI clones upstream `microsoft/mssql-python` at latest `main`, applies our patches,
-builds `mssql_py_core` from source (from `microsoft/mssql-rs`), patches dylibs,
-builds the C++ extension, and packages the wheel. No upstream source lives in this repo.
+CI resolves the latest official upstream `microsoft/mssql-python` release, clones that
+tag, applies our patches, builds `mssql_py_core` from source (from `microsoft/mssql-rs`),
+patches dylibs, builds the C++ extension, and packages the wheel. No upstream source
+lives in this repo.
 
 ## Repo Contents
 ```
@@ -35,7 +36,8 @@ PLAN.md
 ## CI/CD
 - `.github/workflows/build-macos-wheel.yml` — builds on `macos-14` runner (M1, Sonoma)
 - Python matrix: `[3.10, 3.11, 3.12, 3.13, 3.14]`
-- Upstream: always builds against latest `microsoft/mssql-python` main
+- Upstream: builds latest official `microsoft/mssql-python` release tag
+- Automation: daily schedule publishes only missing `vX.Y.Z-macos14` releases
 
 ## Known Risk
 - If upstream renames files we patch, CI fails on `patch` — visible immediately
@@ -45,7 +47,9 @@ PLAN.md
 ## Local Build
 ```bash
 # Clone upstream
-git clone --depth 1 https://github.com/microsoft/mssql-python.git /tmp/mssql-python
+UPSTREAM_TAG="$(curl -fsSL https://api.github.com/repos/microsoft/mssql-python/releases/latest \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"])')"
+git clone --depth 1 --branch "$UPSTREAM_TAG" https://github.com/microsoft/mssql-python.git /tmp/mssql-python
 
 # Apply patches
 patch -d /tmp/mssql-python -p1 < patches/setup.py.patch

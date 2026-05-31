@@ -2,15 +2,150 @@ name: Build macOS Wheels
 
 on:
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: Rebuild and update the current upstream release even if it already exists
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: "17 3 * * *"
   push:
     branches: [main]
     paths-ignore:
       - "**.md"
 
+permissions:
+  contents: read
+
 jobs:
+  resolve-upstream:
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_tag: ${{ steps.resolve.outputs.upstream_tag }}
+      upstream_version: ${{ steps.resolve.outputs.upstream_version }}
+      upstream_sha: ${{ steps.resolve.outputs.upstream_sha }}
+      upstream_url: ${{ steps.resolve.outputs.upstream_url }}
+      mssql_rs_sha: ${{ steps.resolve.outputs.mssql_rs_sha }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      release_exists: ${{ steps.resolve.outputs.release_exists }}
+      release_current: ${{ steps.resolve.outputs.release_current }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+
+    steps:
+      - name: Resolve upstream release
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_REBUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild == true }}
+        run: |
+          set -euo pipefail
+
+          api_headers=(
+            -H "Accept: application/vnd.github+json"
+            -H "Authorization: Bearer ${GH_TOKEN}"
+            -H "X-GitHub-Api-Version: 2022-11-28"
+          )
+
+          upstream_release_json="$(mktemp)"
+          upstream_commit_json="$(mktemp)"
+          mssql_rs_commit_json="$(mktemp)"
+          existing_release_json="$(mktemp)"
+
+          curl -fsSL "${api_headers[@]}" \
+            https://api.github.com/repos/microsoft/mssql-python/releases/latest \
+            > "$upstream_release_json"
+
+          upstream_tag="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["tag_name"])' "$upstream_release_json")"
+          upstream_url="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["html_url"])' "$upstream_release_json")"
+          upstream_version="${upstream_tag#v}"
+          release_tag="${upstream_tag}-macos14"
+
+          curl -fsSL "${api_headers[@]}" \
+            "https://api.github.com/repos/microsoft/mssql-python/commits/${upstream_tag}" \
+            > "$upstream_commit_json"
+          upstream_sha="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["sha"])' "$upstream_commit_json")"
+
+          curl -fsSL "${api_headers[@]}" \
+            https://api.github.com/repos/microsoft/mssql-rs/commits/main \
+            > "$mssql_rs_commit_json"
+          mssql_rs_sha="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["sha"])' "$mssql_rs_commit_json")"
+
+          release_status="$(curl -sS -o "$existing_release_json" -w "%{http_code}" \
+            "${api_headers[@]}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${release_tag}")"
+
+          case "$release_status" in
+            200)
+              release_exists=true
+              ;;
+            404)
+              release_exists=false
+              ;;
+            *)
+              cat "$existing_release_json"
+              echo "Unexpected release lookup status: $release_status" >&2
+              exit 1
+              ;;
+          esac
+
+          if [[ "$release_exists" == "true" ]]; then
+            release_current="$(python3 - "$existing_release_json" "$upstream_sha" "$upstream_version" <<'PY'
+          import json
+          import sys
+
+          release_path, upstream_sha, upstream_version = sys.argv[1:]
+          release = json.load(open(release_path))
+          body = release.get("body") or ""
+          asset_names = {asset.get("name") for asset in release.get("assets", [])}
+          expected_assets = {
+              f"mssql_python-{upstream_version}-cp{py}-cp{py}-macosx_14_0_universal2.whl"
+              for py in ("310", "311", "312", "313", "314")
+          }
+
+          is_current = upstream_sha in body and expected_assets.issubset(asset_names)
+          print("true" if is_current else "false")
+          PY
+          )"
+          else
+            release_current=false
+          fi
+
+          if [[ "$FORCE_REBUILD" == "true" || "$release_current" == "false" ]]; then
+            should_build=true
+          else
+            should_build=false
+          fi
+
+          {
+            echo "upstream_tag=$upstream_tag"
+            echo "upstream_version=$upstream_version"
+            echo "upstream_sha=$upstream_sha"
+            echo "upstream_url=$upstream_url"
+            echo "mssql_rs_sha=$mssql_rs_sha"
+            echo "release_tag=$release_tag"
+            echo "release_exists=$release_exists"
+            echo "release_current=$release_current"
+            echo "should_build=$should_build"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Upstream resolution"
+            echo "- mssql-python: [$upstream_tag]($upstream_url) ($upstream_sha)"
+            echo "- mssql-rs: https://github.com/microsoft/mssql-rs/commit/$mssql_rs_sha"
+            echo "- target release: $release_tag"
+            echo "- release exists: $release_exists"
+            echo "- release current: $release_current"
+            echo "- force rebuild: $FORCE_REBUILD"
+            echo "- build required: $should_build"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
+    needs: resolve-upstream
+    if: needs.resolve-upstream.outputs.should_build == 'true'
     runs-on: macos-14
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
@@ -25,13 +160,38 @@ jobs:
         with:
           targets: x86_64-apple-darwin
 
+      - name: Clone mssql-rs
+        env:
+          MSSQL_RS_SHA: ${{ needs.resolve-upstream.outputs.mssql_rs_sha }}
+        run: |
+          set -euo pipefail
+          git init /tmp/mssql-rs
+          git -C /tmp/mssql-rs remote add origin https://github.com/microsoft/mssql-rs.git
+          git -C /tmp/mssql-rs fetch --depth 1 origin "$MSSQL_RS_SHA"
+          git -C /tmp/mssql-rs checkout --detach FETCH_HEAD
+          echo "MSSQL_RS_DIR=/tmp/mssql-rs" >> "$GITHUB_ENV"
+          echo "Using mssql-rs commit: $(git -C /tmp/mssql-rs rev-parse HEAD)"
+
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: /tmp/mssql-rs -> target
+          prefix-key: v1-mssql-py-core-macos14
+          key: py${{ matrix.python-version }}-${{ needs.resolve-upstream.outputs.upstream_tag }}
+          workspaces: /tmp/mssql-rs/mssql-py-core -> target
           cache-on-failure: true
 
       - name: Clone upstream mssql-python
-        run: git clone --depth 1 https://github.com/microsoft/mssql-python.git /tmp/mssql-python
+        env:
+          UPSTREAM_TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+          UPSTREAM_SHA: ${{ needs.resolve-upstream.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$UPSTREAM_TAG" https://github.com/microsoft/mssql-python.git /tmp/mssql-python
+          actual_sha="$(git -C /tmp/mssql-python rev-parse HEAD)"
+          if [[ "$actual_sha" != "$UPSTREAM_SHA" ]]; then
+            echo "Expected upstream $UPSTREAM_SHA but cloned $actual_sha" >&2
+            exit 1
+          fi
+          echo "Cloned mssql-python $UPSTREAM_TAG at $actual_sha"
 
       - name: Apply macOS 14 patches
         run: |
@@ -64,15 +224,49 @@ jobs:
         run: python setup.py bdist_wheel
         working-directory: /tmp/mssql-python
 
+      - name: Verify wheel
+        env:
+          UPSTREAM_VERSION: ${{ needs.resolve-upstream.outputs.upstream_version }}
+          UPSTREAM_TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+          UPSTREAM_SHA: ${{ needs.resolve-upstream.outputs.upstream_sha }}
+          MSSQL_RS_SHA: ${{ needs.resolve-upstream.outputs.mssql_rs_sha }}
+        run: |
+          set -euo pipefail
+          wheel_count="$(find /tmp/mssql-python/dist -maxdepth 1 -type f -name '*.whl' | wc -l | tr -d ' ')"
+          if [[ "$wheel_count" != "1" ]]; then
+            find /tmp/mssql-python/dist -maxdepth 1 -type f -name '*.whl' -print
+            echo "Expected exactly one wheel, found $wheel_count" >&2
+            exit 1
+          fi
+
+          wheel="$(find /tmp/mssql-python/dist -maxdepth 1 -type f -name '*.whl' | head -n 1)"
+          wheel_name="$(basename "$wheel")"
+          case "$wheel_name" in
+            mssql_python-"$UPSTREAM_VERSION"-*-macosx_14_0_universal2.whl)
+              ;;
+            *)
+              echo "Wheel does not match expected version/platform: $wheel_name" >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "### Built wheel"
+            echo "- wheel: $wheel_name"
+            echo "- mssql-python: $UPSTREAM_TAG ($UPSTREAM_SHA)"
+            echo "- mssql-rs: $MSSQL_RS_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v7
         with:
           name: whl-cp${{ matrix.python-version }}
           path: /tmp/mssql-python/dist/*.whl
+          if-no-files-found: error
 
   release:
-    needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [resolve-upstream, build]
+    if: needs.resolve-upstream.outputs.should_build == 'true' && needs.build.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -83,9 +277,47 @@ jobs:
           path: dist/
           merge-multiple: true
 
+      - name: Verify release assets
+        run: |
+          set -euo pipefail
+          wheel_count="$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l | tr -d ' ')"
+          if [[ "$wheel_count" != "5" ]]; then
+            find dist -maxdepth 1 -type f -name '*.whl' -print
+            echo "Expected five wheels, found $wheel_count" >&2
+            exit 1
+          fi
+          find dist -maxdepth 1 -type f -name '*.whl' -print | sort
+
+      - name: Generate release notes
+        env:
+          UPSTREAM_TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+          UPSTREAM_SHA: ${{ needs.resolve-upstream.outputs.upstream_sha }}
+          UPSTREAM_URL: ${{ needs.resolve-upstream.outputs.upstream_url }}
+          MSSQL_RS_SHA: ${{ needs.resolve-upstream.outputs.mssql_rs_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "macOS 14 compatible wheels for mssql-python $UPSTREAM_TAG."
+            echo
+            echo "- Upstream mssql-python: [$UPSTREAM_TAG]($UPSTREAM_URL) ($UPSTREAM_SHA)"
+            echo "- mssql_py_core source: [microsoft/mssql-rs@$MSSQL_RS_SHA](https://github.com/microsoft/mssql-rs/commit/$MSSQL_RS_SHA)"
+            echo "- Platform tag: macosx_14_0_universal2"
+            echo "- Python versions: 3.10, 3.11, 3.12, 3.13, 3.14"
+            echo "- Build run: $RUN_URL"
+            echo
+            echo "Assets:"
+            find dist -maxdepth 1 -type f -name '*.whl' -exec basename {} \; | sort | sed 's/^/- /'
+          } > release-notes.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: build-${{ github.sha }}
-          name: macOS 14 Wheels (${{ github.sha }})
+          tag_name: ${{ needs.resolve-upstream.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          name: mssql-python ${{ needs.resolve-upstream.outputs.upstream_tag }} macOS 14 wheels
+          body_path: release-notes.md
           files: dist/*.whl
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          make_latest: true
