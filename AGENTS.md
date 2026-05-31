@@ -38,6 +38,7 @@ PLAN.md
 - Python matrix: `[3.10, 3.11, 3.12, 3.13, 3.14]`
 - Upstream: builds latest official `microsoft/mssql-python` release tag
 - Automation: daily schedule publishes only missing `vX.Y.Z-macos14` releases
+- Pushes do not trigger wheel builds; use schedule or manual workflow dispatch
 
 ## Known Risk
 - If upstream renames files we patch, CI fails on `patch` — visible immediately
@@ -46,9 +47,13 @@ PLAN.md
 
 ## Local Build
 ```bash
-# Clone upstream
+# Clone latest upstream release
 UPSTREAM_TAG="$(curl -fsSL https://api.github.com/repos/microsoft/mssql-python/releases/latest \
   | python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"])')"
+
+# Or choose a specific upstream version:
+# UPSTREAM_TAG=v1.8.0
+
 git clone --depth 1 --branch "$UPSTREAM_TAG" https://github.com/microsoft/mssql-python.git /tmp/mssql-python
 
 # Apply patches

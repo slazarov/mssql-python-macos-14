@@ -10,10 +10,6 @@ on:
         default: false
   schedule:
     - cron: "17 3 * * *"
-  push:
-    branches: [main]
-    paths-ignore:
-      - "**.md"
 
 permissions:
   contents: read
