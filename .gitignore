@@ -1,4 +1,139 @@
-.DS_Store
-*.whl
-dist/
+# ========================================
+# Dependencies & Virtual Environments
+# ========================================
+**/node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+.eggs/
+eggs/
+
+# uv
+.venv/
+
+# ========================================
+# Build & Distribution
+# ========================================
 build/
+dist/
+design-artifacts/
+
+# ========================================
+# Environment Variables & Secrets
+# ========================================
+.env
+.env.local
+.env.*.local
+
+# ========================================
+# Logs
+# ========================================
+logs/
+*.log
+npm-debug.log*
+
+# ========================================
+# Tests & Coverage
+# ========================================
+test-output/
+coverage/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.ruff_cache/
+.pytest_cache/
+.uv-cache/
+.tox/
+.nox/
+
+# ========================================
+# IDE & Editor
+# ========================================
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+*.swp
+
+# ========================================
+# AI Tools & Agents
+# ========================================
+.claude/*
+!.claude/rules/
+.claude/hooks/
+.claude/settings.json
+
+# Project-shared LPS skills (committed)
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/lps-*
+!.claude/skills/lps-*/**
+!.claude/skills/_shared/
+!.claude/skills/_shared/**
+.claude/skills/lps-*/**/__pycache__/
+.claude/skills/_shared/**/__pycache__/
+
+# Other AI tools
+.codex/*
+!.codex/
+!.codex/hooks/
+!.codex/hooks/codex_ruff_after_edit.py
+!.codex/hooks.json
+.opencode/
+.serena/
+.mcp.json
+.mcp.json.bkup
+opencode.json
+opencode.json.bkup
+CLAUDE.local.md
+.clinerules
+.cursor
+.gemini
+.augment/
+.codebuddy
+.crush
+.iflow
+.qwen
+.rovodev
+.kilocodemodes
+.kiro
+.roo
+.trae
+.windsurf
+.junie/
+.agent
+.agentvibes
+
+# .agents/ contains local symlinks only
+.agents/
+
+# ========================================
+# Local Development
+# ========================================
+# Local scratch notes
+scratch/
+
+# Temporary / Vendor
+tmp/
+
+
+# ========================================
+# Misc
+# ========================================
+# System & temp files
+*.swp
+
+
+# Ignore everything in .mcp.* and opencode.* patterns
+.mcp.*
+opencode.*
+.run
+
+# Harness runner
+harness-config.toml
