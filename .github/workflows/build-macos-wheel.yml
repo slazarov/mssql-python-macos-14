@@ -194,6 +194,31 @@ jobs:
           patch -d /tmp/mssql-python -p1 < patches/setup.py.patch
           patch -d /tmp/mssql-python -p1 < patches/cmake.patch
 
+      - name: Align wheel version with upstream release tag
+        env:
+          UPSTREAM_VERSION: ${{ needs.resolve-upstream.outputs.upstream_version }}
+        working-directory: /tmp/mssql-python
+        run: |
+          set -euo pipefail
+          python3 - "$UPSTREAM_VERSION" <<'PY'
+          import pathlib, re, sys
+
+          version = sys.argv[1]
+          path = pathlib.Path("setup.py")
+          text = path.read_text()
+          # Upstream occasionally tags a release without bumping the hardcoded
+          # setup.py version (e.g. v1.11.0 still declared version="1.10.0"),
+          # which makes the built wheel filename mismatch the release tag. Force
+          # the declared version to match the tag we are building.
+          new_text, count = re.subn(
+              r'version="[^"]*"', f'version="{version}"', text, count=1
+          )
+          if count != 1:
+              sys.exit(f"Expected exactly one version= assignment in setup.py, replaced {count}")
+          path.write_text(new_text)
+          print(f"Set setup.py version to {version}")
+          PY
+
       - name: Install system dependencies
         run: brew install unixodbc
 
