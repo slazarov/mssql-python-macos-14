@@ -32,6 +32,10 @@ PLAN.md
 2. `mssql_python/pybind/CMakeLists.txt`: `CMAKE_OSX_DEPLOYMENT_TARGET=14.0`
 3. `mssql_py_core` built from source with `MACOSX_DEPLOYMENT_TARGET=14.0`
 4. Bundled ODBC dylibs patched with `vtool -set-build-version macos 14.0 15.0`
+   (in `mssql_python_odbc/libs/macos` since upstream v1.15.0, `mssql_python/libs/macos` before)
+5. Since v1.15.0, `mssql-python` pins a separate `mssql-python-odbc` package; CI builds it
+   via `setup_odbc.py` with `ODBC_TARGET_PLATFORM_TAG=macosx_14_0_universal2` and releases it
+   alongside the per-Python wheels (PyPI's copy is macOS 15+ only)
 
 ## CI/CD
 - `.github/workflows/build-macos-wheel.yml` — builds on `macos-14` runner (M1, Sonoma)
@@ -69,4 +73,7 @@ scripts/build-mssql-py-core.sh /tmp/mssql-python
 scripts/patch-dylibs.sh /tmp/mssql-python
 cd /tmp/mssql-python/mssql_python/pybind && chmod +x build.sh configure_dylibs.sh && ./build.sh
 cd /tmp/mssql-python && python setup.py bdist_wheel
+# v1.15.0+: ODBC driver wheel
+ODBC_TARGET_PLATFORM_TAG=macosx_14_0_universal2 ODBC_TARGET_ARCH=universal2 \
+  python setup_odbc.py bdist_wheel --dist-dir dist-odbc
 ```

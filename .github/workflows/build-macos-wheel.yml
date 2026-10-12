@@ -23,6 +23,7 @@ jobs:
       upstream_sha: ${{ steps.resolve.outputs.upstream_sha }}
       upstream_url: ${{ steps.resolve.outputs.upstream_url }}
       mssql_rs_sha: ${{ steps.resolve.outputs.mssql_rs_sha }}
+      has_odbc_package: ${{ steps.resolve.outputs.has_odbc_package }}
       release_tag: ${{ steps.resolve.outputs.release_tag }}
       release_exists: ${{ steps.resolve.outputs.release_exists }}
       release_current: ${{ steps.resolve.outputs.release_current }}
@@ -62,6 +63,19 @@ jobs:
             > "$upstream_commit_json"
           upstream_sha="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["sha"])' "$upstream_commit_json")"
 
+          # Since v1.15.0 the ODBC driver ships as a separate mssql-python-odbc
+          # wheel (built by setup_odbc.py) that mssql-python pins as a dependency.
+          odbc_status="$(curl -sS -o /dev/null -w "%{http_code}" "${api_headers[@]}" \
+            "https://api.github.com/repos/microsoft/mssql-python/contents/setup_odbc.py?ref=${upstream_tag}")"
+          case "$odbc_status" in
+            200) has_odbc_package=true ;;
+            404) has_odbc_package=false ;;
+            *)
+              echo "Unexpected setup_odbc.py lookup status: $odbc_status" >&2
+              exit 1
+              ;;
+          esac
+
           curl -fsSL "${api_headers[@]}" \
             https://api.github.com/repos/microsoft/mssql-rs/commits/main \
             > "$mssql_rs_commit_json"
@@ -86,11 +100,11 @@ jobs:
           esac
 
           if [[ "$release_exists" == "true" ]]; then
-            release_current="$(python3 - "$existing_release_json" "$upstream_sha" "$upstream_version" <<'PY'
+            release_current="$(python3 - "$existing_release_json" "$upstream_sha" "$upstream_version" "$has_odbc_package" <<'PY'
           import json
           import sys
 
-          release_path, upstream_sha, upstream_version = sys.argv[1:]
+          release_path, upstream_sha, upstream_version, has_odbc_package = sys.argv[1:]
           release = json.load(open(release_path))
           body = release.get("body") or ""
           asset_names = {asset.get("name") for asset in release.get("assets", [])}
@@ -100,6 +114,12 @@ jobs:
           }
 
           is_current = upstream_sha in body and expected_assets.issubset(asset_names)
+          if has_odbc_package == "true":
+              is_current = is_current and any(
+                  name.startswith("mssql_python_odbc-")
+                  and name.endswith("-py3-none-macosx_14_0_universal2.whl")
+                  for name in asset_names
+              )
           print("true" if is_current else "false")
           PY
           )"
@@ -119,6 +139,7 @@ jobs:
             echo "upstream_sha=$upstream_sha"
             echo "upstream_url=$upstream_url"
             echo "mssql_rs_sha=$mssql_rs_sha"
+            echo "has_odbc_package=$has_odbc_package"
             echo "release_tag=$release_tag"
             echo "release_exists=$release_exists"
             echo "release_current=$release_current"
@@ -129,6 +150,7 @@ jobs:
             echo "### Upstream resolution"
             echo "- mssql-python: [$upstream_tag]($upstream_url) ($upstream_sha)"
             echo "- mssql-rs: https://github.com/microsoft/mssql-rs/commit/$mssql_rs_sha"
+            echo "- separate mssql-python-odbc package: $has_odbc_package"
             echo "- target release: $release_tag"
             echo "- release exists: $release_exists"
             echo "- release current: $release_current"
@@ -285,6 +307,54 @@ jobs:
           path: /tmp/mssql-python/dist/*.whl
           if-no-files-found: error
 
+      # The mssql-python-odbc wheel is py3-none (driver binaries only), so it is
+      # identical across the Python matrix; build it from a single leg. Upstream
+      # publishes it as macosx_15_0 only, so mssql-python's pinned dependency
+      # would otherwise be uninstallable on macOS 14.
+      - name: Build ODBC wheel
+        if: needs.resolve-upstream.outputs.has_odbc_package == 'true' && matrix.python-version == '3.14'
+        env:
+          ODBC_TARGET_PLATFORM_TAG: macosx_14_0_universal2
+          ODBC_TARGET_ARCH: universal2
+        working-directory: /tmp/mssql-python
+        run: |
+          set -euo pipefail
+          python setup_odbc.py bdist_wheel --dist-dir /tmp/mssql-python/dist-odbc
+
+          wheels=(/tmp/mssql-python/dist-odbc/mssql_python_odbc-*-py3-none-macosx_14_0_universal2.whl)
+          if [[ "${#wheels[@]}" != "1" || ! -f "${wheels[0]}" ]]; then
+            ls -la /tmp/mssql-python/dist-odbc >&2
+            echo "Expected exactly one macosx_14_0 mssql_python_odbc wheel" >&2
+            exit 1
+          fi
+
+          # Every dylib in the wheel must carry the patched macOS 14.0 minos.
+          check_dir="$(mktemp -d)"
+          python -m zipfile -e "${wheels[0]}" "$check_dir"
+          dylib_count=0
+          while IFS= read -r -d '' dylib; do
+            dylib_count=$((dylib_count + 1))
+            if vtool -show-build "$dylib" | grep -Eq 'minos 1[5-9]'; then
+              vtool -show-build "$dylib" >&2
+              echo "Dylib not patched to macOS 14: $dylib" >&2
+              exit 1
+            fi
+          done < <(find "$check_dir" -name '*.dylib' -print0)
+          if [[ "$dylib_count" == "0" ]]; then
+            echo "No dylibs found in ODBC wheel" >&2
+            exit 1
+          fi
+
+          echo "- odbc wheel: $(basename "${wheels[0]}") ($dylib_count dylibs at macOS 14.0)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload ODBC wheel artifact
+        if: needs.resolve-upstream.outputs.has_odbc_package == 'true' && matrix.python-version == '3.14'
+        uses: actions/upload-artifact@v7
+        with:
+          name: whl-odbc
+          path: /tmp/mssql-python/dist-odbc/*.whl
+          if-no-files-found: error
+
   release:
     needs: [resolve-upstream, build]
     if: needs.resolve-upstream.outputs.should_build == 'true' && needs.build.result == 'success'
@@ -299,12 +369,23 @@ jobs:
           merge-multiple: true
 
       - name: Verify release assets
+        env:
+          HAS_ODBC_PACKAGE: ${{ needs.resolve-upstream.outputs.has_odbc_package }}
         run: |
           set -euo pipefail
+          expected=5
+          if [[ "$HAS_ODBC_PACKAGE" == "true" ]]; then
+            expected=6
+            odbc_count="$(find dist -maxdepth 1 -type f -name 'mssql_python_odbc-*.whl' | wc -l | tr -d ' ')"
+            if [[ "$odbc_count" != "1" ]]; then
+              echo "Expected one mssql_python_odbc wheel, found $odbc_count" >&2
+              exit 1
+            fi
+          fi
           wheel_count="$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l | tr -d ' ')"
-          if [[ "$wheel_count" != "5" ]]; then
+          if [[ "$wheel_count" != "$expected" ]]; then
             find dist -maxdepth 1 -type f -name '*.whl' -print
-            echo "Expected five wheels, found $wheel_count" >&2
+            echo "Expected $expected wheels, found $wheel_count" >&2
             exit 1
           fi
           find dist -maxdepth 1 -type f -name '*.whl' -print | sort
@@ -326,6 +407,11 @@ jobs:
             echo "- Platform tag: macosx_14_0_universal2"
             echo "- Python versions: 3.10, 3.11, 3.12, 3.13, 3.14"
             echo "- Build run: $RUN_URL"
+            if compgen -G 'dist/mssql_python_odbc-*.whl' > /dev/null; then
+              echo
+              echo "Install the \`mssql_python_odbc\` wheel together with the \`mssql_python\` wheel"
+              echo "for your Python version; the PyPI ODBC wheel is macOS 15+ only."
+            fi
             echo
             echo "Assets:"
             find dist -maxdepth 1 -type f -name '*.whl' -exec basename {} \; | sort | sed 's/^/- /'

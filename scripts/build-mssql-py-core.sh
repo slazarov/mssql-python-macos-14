@@ -25,9 +25,19 @@ MACOSX_DEPLOYMENT_TARGET=14.0 maturin build --release \
 
 cd "$MSSQL_DIR"
 
+# The distribution was renamed mssql_py_core -> mssql_python_rs; the importable
+# module is still mssql_py_core. Accept either wheel name.
+shopt -s nullglob
+wheels=("$MSSQL_RS_DIR"/mssql-py-core/target/wheels/{mssql_python_rs,mssql_py_core}-*.whl)
+shopt -u nullglob
+if [ "${#wheels[@]}" -ne 1 ]; then
+    echo "Expected exactly one mssql-py-core wheel, found ${#wheels[@]}:" >&2
+    ls -la "$MSSQL_RS_DIR"/mssql-py-core/target/wheels/ >&2 || true
+    exit 1
+fi
+
 rm -rf /tmp/mssql_py_core_extract
-pip install "$MSSQL_RS_DIR"/mssql-py-core/target/wheels/mssql_py_core-*.whl \
-    --target /tmp/mssql_py_core_extract --no-deps
+pip install "${wheels[0]}" --target /tmp/mssql_py_core_extract --no-deps
 
 mkdir -p mssql_py_core
 cp -r /tmp/mssql_py_core_extract/mssql_py_core/ mssql_py_core/

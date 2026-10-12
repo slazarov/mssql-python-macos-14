@@ -11,6 +11,12 @@ macOS 15 Sequoia or newer. This repo rebuilds the same upstream release with a
 
 Supported Python versions are `3.10`, `3.11`, `3.12`, `3.13`, and `3.14`.
 
+Since upstream `v1.15.0`, the ODBC driver ships as a separate `mssql-python-odbc`
+package that `mssql-python` depends on. Its PyPI wheel is macOS 15+ only, so each
+release here also includes a `mssql_python_odbc-*-py3-none-macosx_14_0_universal2.whl`.
+Install it in the same `pip` command as the `mssql_python` wheel. The commands below
+handle both layouts.
+
 Install the latest versioned macOS 14 release for your current Python:
 
 ```bash
@@ -31,8 +37,15 @@ VERSION="${RELEASE_TAG#v}"
 VERSION="${VERSION%-macos14}"
 PY_TAG="cp$(python3 -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
 
-python3 -m pip install \
-  "https://github.com/slazarov/mssql-python-macos-14/releases/download/${RELEASE_TAG}/mssql_python-${VERSION}-${PY_TAG}-${PY_TAG}-macosx_14_0_universal2.whl"
+python3 -m pip install $(
+  curl -fsSL "https://api.github.com/repos/slazarov/mssql-python-macos-14/releases/tags/${RELEASE_TAG}" \
+    | python3 -c 'import json, sys
+py_tag = sys.argv[1]
+for asset in json.load(sys.stdin)["assets"]:
+    name = asset["name"]
+    if name.startswith("mssql_python_odbc-") or f"-{py_tag}-{py_tag}-" in name:
+        print(asset["browser_download_url"])' "$PY_TAG"
+)
 ```
 
 Install a specific `mssql-python` version:
@@ -42,8 +55,15 @@ VERSION=1.8.0
 PYTHON=3.13
 PY_TAG="cp${PYTHON/./}"
 
-python${PYTHON} -m pip install \
-  "https://github.com/slazarov/mssql-python-macos-14/releases/download/v${VERSION}-macos14/mssql_python-${VERSION}-${PY_TAG}-${PY_TAG}-macosx_14_0_universal2.whl"
+python${PYTHON} -m pip install $(
+  curl -fsSL "https://api.github.com/repos/slazarov/mssql-python-macos-14/releases/tags/v${VERSION}-macos14" \
+    | python3 -c 'import json, sys
+py_tag = sys.argv[1]
+for asset in json.load(sys.stdin)["assets"]:
+    name = asset["name"]
+    if name.startswith("mssql_python_odbc-") or f"-{py_tag}-{py_tag}-" in name:
+        print(asset["browser_download_url"])' "$PY_TAG"
+)
 ```
 
 Change `VERSION` to the upstream version you want and `PYTHON` to the interpreter
@@ -79,7 +99,8 @@ The workflow:
 - does not run on ordinary pushes
 - builds only when the latest upstream release SHA is missing here or the existing
   release is incomplete
-- publishes wheels for Python `3.10` through `3.14`
+- publishes wheels for Python `3.10` through `3.14`, plus the `mssql-python-odbc`
+  driver wheel for upstream `v1.15.0` and newer
 
 Manual rebuilds are available from GitHub Actions. By default a manual run skips an
 existing complete release; set `force_rebuild=true` to rebuild and replace the assets
@@ -91,8 +112,9 @@ for the current upstream release.
 |---|---|
 | `patches/setup.py.patch` | Wheel platform tag `macosx_15_0_universal2` to `macosx_14_0_universal2`, plus `plat_name_supplied = True` |
 | `patches/cmake.patch` | Sets `CMAKE_OSX_DEPLOYMENT_TARGET=14.0` |
-| `scripts/patch-dylibs.sh` | Rewrites bundled ODBC dylib deployment targets to macOS 14.0 with `vtool`, then codesigns them |
-| `scripts/build-mssql-py-core.sh` | Builds `mssql_py_core` from `microsoft/mssql-rs` with `MACOSX_DEPLOYMENT_TARGET=14.0` |
+| `scripts/patch-dylibs.sh` | Rewrites bundled ODBC dylib deployment targets to macOS 14.0 with `vtool`, then codesigns them (`mssql_python_odbc/libs` since `v1.15.0`, `mssql_python/libs` before) |
+| `scripts/build-mssql-py-core.sh` | Builds `mssql_py_core` (dist name `mssql-python-rs`) from `microsoft/mssql-rs` with `MACOSX_DEPLOYMENT_TARGET=14.0` |
+| `setup_odbc.py` (env only) | Built with `ODBC_TARGET_PLATFORM_TAG=macosx_14_0_universal2` to produce the macOS 14 `mssql-python-odbc` wheel |
 
 No upstream source code is stored in this repo. The workflow clones the selected
 upstream `mssql-python` release tag during the build.
@@ -134,9 +156,14 @@ chmod +x build.sh configure_dylibs.sh
 
 cd /tmp/mssql-python
 python3 setup.py bdist_wheel
+
+# v1.15.0+ only: build the macOS 14 ODBC driver wheel
+ODBC_TARGET_PLATFORM_TAG=macosx_14_0_universal2 ODBC_TARGET_ARCH=universal2 \
+  python3 setup_odbc.py bdist_wheel --dist-dir dist-odbc
 ```
 
-The wheel is written to `/tmp/mssql-python/dist/`.
+The wheel is written to `/tmp/mssql-python/dist/` (and the ODBC wheel to
+`/tmp/mssql-python/dist-odbc/`).
 
 ## Risk
 
