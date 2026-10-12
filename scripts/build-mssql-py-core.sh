@@ -42,5 +42,16 @@ pip install "${wheels[0]}" --target /tmp/mssql_py_core_extract --no-deps
 mkdir -p mssql_py_core
 cp -r /tmp/mssql_py_core_extract/mssql_py_core/ mssql_py_core/
 
+# mssql-rs now builds a stable-ABI extension (mssql_py_core.abi3.so), but
+# upstream setup.py only packages mssql_py_core.cp*.so. Rename it to this
+# interpreter's suffix so it is included; abi3 modules load under either name.
+shopt -s nullglob
+for so in mssql_py_core/mssql_py_core*.abi3.so; do
+    ext_suffix="$(python -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')"
+    mv "$so" "mssql_py_core/mssql_py_core${ext_suffix}"
+    echo "Renamed $(basename "$so") -> mssql_py_core${ext_suffix}"
+done
+shopt -u nullglob
+
 echo "mssql_py_core built and installed into: $MSSQL_DIR/mssql_py_core/"
 ls -la mssql_py_core/

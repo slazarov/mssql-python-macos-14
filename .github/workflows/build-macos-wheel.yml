@@ -293,6 +293,17 @@ jobs:
               ;;
           esac
 
+          # Both native modules must be packaged; upstream package_data globs
+          # silently skip files with unexpected names (e.g. *.abi3.so).
+          wheel_files="$(python -m zipfile -l "$wheel")"
+          for pattern in 'mssql_py_core/mssql_py_core\..*\.so' 'mssql_python/ddbc_bindings\..*\.so'; do
+            if ! grep -Eq "$pattern" <<<"$wheel_files"; then
+              echo "$wheel_files"
+              echo "Wheel is missing native module matching: $pattern" >&2
+              exit 1
+            fi
+          done
+
           {
             echo "### Built wheel"
             echo "- wheel: $wheel_name"
