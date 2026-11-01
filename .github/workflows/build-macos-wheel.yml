@@ -24,6 +24,8 @@ jobs:
       upstream_url: ${{ steps.resolve.outputs.upstream_url }}
       mssql_rs_sha: ${{ steps.resolve.outputs.mssql_rs_sha }}
       has_odbc_package: ${{ steps.resolve.outputs.has_odbc_package }}
+      has_rs_package: ${{ steps.resolve.outputs.has_rs_package }}
+      rs_version: ${{ steps.resolve.outputs.rs_version }}
       release_tag: ${{ steps.resolve.outputs.release_tag }}
       release_exists: ${{ steps.resolve.outputs.release_exists }}
       release_current: ${{ steps.resolve.outputs.release_current }}
@@ -76,10 +78,50 @@ jobs:
               ;;
           esac
 
-          curl -fsSL "${api_headers[@]}" \
-            https://api.github.com/repos/microsoft/mssql-rs/commits/main \
-            > "$mssql_rs_commit_json"
-          mssql_rs_sha="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["sha"])' "$mssql_rs_commit_json")"
+          # Since v1.16.0 mssql_py_core ships as a separate mssql-python-rs wheel
+          # that mssql-python pins via eng/versions/mssql-python-rs.version.
+          rs_version_file="$(mktemp)"
+          rs_status="$(curl -sS -o "$rs_version_file" -w "%{http_code}" "${api_headers[@]}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            "https://api.github.com/repos/microsoft/mssql-python/contents/eng/versions/mssql-python-rs.version?ref=${upstream_tag}")"
+          case "$rs_status" in
+            200)
+              has_rs_package=true
+              rs_version="$(tr -d '[:space:]' < "$rs_version_file")"
+              ;;
+            404)
+              has_rs_package=false
+              rs_version=""
+              ;;
+            *)
+              echo "Unexpected mssql-python-rs.version lookup status: $rs_status" >&2
+              exit 1
+              ;;
+          esac
+
+          if [[ "$has_rs_package" == "true" ]]; then
+            # mssql-rs has no release tags. Build from the main commit that was
+            # current when the pinned version was uploaded to PyPI, and check
+            # that commit actually declares that version.
+            rs_upload_time="$(curl -fsSL "https://pypi.org/pypi/mssql-python-rs/${rs_version}/json" \
+              | python3 -c 'import json, sys; print(min(u["upload_time_iso_8601"] for u in json.load(sys.stdin)["urls"]))')"
+            curl -fsSL "${api_headers[@]}" \
+              "https://api.github.com/repos/microsoft/mssql-rs/commits?sha=main&until=${rs_upload_time}&per_page=1" \
+              > "$mssql_rs_commit_json"
+            mssql_rs_sha="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))[0]["sha"])' "$mssql_rs_commit_json")"
+            rs_declared="$(curl -fsSL "${api_headers[@]}" -H "Accept: application/vnd.github.raw+json" \
+              "https://api.github.com/repos/microsoft/mssql-rs/contents/mssql-py-core/pyproject.toml?ref=${mssql_rs_sha}" \
+              | python3 -c 'import sys, tomllib; print(tomllib.loads(sys.stdin.read())["project"]["version"])')"
+            if [[ "$rs_declared" != "$rs_version" ]]; then
+              echo "mssql-rs@$mssql_rs_sha declares mssql-python-rs $rs_declared, expected $rs_version" >&2
+              exit 1
+            fi
+          else
+            curl -fsSL "${api_headers[@]}" \
+              https://api.github.com/repos/microsoft/mssql-rs/commits/main \
+              > "$mssql_rs_commit_json"
+            mssql_rs_sha="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["sha"])' "$mssql_rs_commit_json")"
+          fi
 
           release_status="$(curl -sS -o "$existing_release_json" -w "%{http_code}" \
             "${api_headers[@]}" \
@@ -100,11 +142,11 @@ jobs:
           esac
 
           if [[ "$release_exists" == "true" ]]; then
-            release_current="$(python3 - "$existing_release_json" "$upstream_sha" "$upstream_version" "$has_odbc_package" <<'PY'
+            release_current="$(python3 - "$existing_release_json" "$upstream_sha" "$upstream_version" "$has_odbc_package" "$rs_version" <<'PY'
           import json
           import sys
 
-          release_path, upstream_sha, upstream_version, has_odbc_package = sys.argv[1:]
+          release_path, upstream_sha, upstream_version, has_odbc_package, rs_version = sys.argv[1:]
           release = json.load(open(release_path))
           body = release.get("body") or ""
           asset_names = {asset.get("name") for asset in release.get("assets", [])}
@@ -118,6 +160,12 @@ jobs:
               is_current = is_current and any(
                   name.startswith("mssql_python_odbc-")
                   and name.endswith("-py3-none-macosx_14_0_universal2.whl")
+                  for name in asset_names
+              )
+          if rs_version:
+              is_current = is_current and any(
+                  name.startswith(f"mssql_python_rs-{rs_version}-")
+                  and "macosx_14_0" in name
                   for name in asset_names
               )
           print("true" if is_current else "false")
@@ -140,6 +188,8 @@ jobs:
             echo "upstream_url=$upstream_url"
             echo "mssql_rs_sha=$mssql_rs_sha"
             echo "has_odbc_package=$has_odbc_package"
+            echo "has_rs_package=$has_rs_package"
+            echo "rs_version=$rs_version"
             echo "release_tag=$release_tag"
             echo "release_exists=$release_exists"
             echo "release_current=$release_current"
@@ -151,6 +201,7 @@ jobs:
             echo "- mssql-python: [$upstream_tag]($upstream_url) ($upstream_sha)"
             echo "- mssql-rs: https://github.com/microsoft/mssql-rs/commit/$mssql_rs_sha"
             echo "- separate mssql-python-odbc package: $has_odbc_package"
+            echo "- separate mssql-python-rs package: $has_rs_package ${rs_version:+(==$rs_version)}"
             echo "- target release: $release_tag"
             echo "- release exists: $release_exists"
             echo "- release current: $release_current"
@@ -175,10 +226,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.resolve-upstream.outputs.has_rs_package != 'true' || matrix.python-version == '3.14'
         with:
           targets: x86_64-apple-darwin
 
+      # Since v1.16.0 mssql-python-rs is a separate abi3 wheel, identical
+      # across the Python matrix, so it is built from a single leg.
       - name: Clone mssql-rs
+        if: needs.resolve-upstream.outputs.has_rs_package != 'true' || matrix.python-version == '3.14'
         env:
           MSSQL_RS_SHA: ${{ needs.resolve-upstream.outputs.mssql_rs_sha }}
         run: |
@@ -191,6 +246,7 @@ jobs:
           echo "Using mssql-rs commit: $(git -C /tmp/mssql-rs rev-parse HEAD)"
 
       - uses: Swatinem/rust-cache@v2
+        if: needs.resolve-upstream.outputs.has_rs_package != 'true' || matrix.python-version == '3.14'
         with:
           prefix-key: v1-mssql-py-core-macos14
           key: py${{ matrix.python-version }}-${{ needs.resolve-upstream.outputs.upstream_tag }}
@@ -251,6 +307,9 @@ jobs:
         working-directory: /tmp/mssql-python
 
       - name: Build mssql_py_core from source
+        if: needs.resolve-upstream.outputs.has_rs_package != 'true' || matrix.python-version == '3.14'
+        env:
+          RS_WHEEL_DIR: /tmp/mssql-python/dist-rs
         run: scripts/build-mssql-py-core.sh /tmp/mssql-python
 
       - name: Patch ODBC dylib deployment targets
@@ -273,6 +332,7 @@ jobs:
           UPSTREAM_TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
           UPSTREAM_SHA: ${{ needs.resolve-upstream.outputs.upstream_sha }}
           MSSQL_RS_SHA: ${{ needs.resolve-upstream.outputs.mssql_rs_sha }}
+          RS_VERSION: ${{ needs.resolve-upstream.outputs.rs_version }}
         run: |
           set -euo pipefail
           wheel_count="$(find /tmp/mssql-python/dist -maxdepth 1 -type f -name '*.whl' | wc -l | tr -d ' ')"
@@ -293,10 +353,28 @@ jobs:
               ;;
           esac
 
-          # Both native modules must be packaged; upstream package_data globs
-          # silently skip files with unexpected names (e.g. *.abi3.so).
+          # Native modules must be packaged; upstream package_data globs
+          # silently skip files with unexpected names (e.g. *.abi3.so). Since
+          # v1.16.0 mssql_py_core lives in the separate mssql-python-rs wheel.
           wheel_files="$(python -m zipfile -l "$wheel")"
-          for pattern in 'mssql_py_core/mssql_py_core\..*\.so' 'mssql_python/ddbc_bindings\..*\.so'; do
+          patterns=('mssql_python/ddbc_bindings\..*\.so')
+          if [[ -z "$RS_VERSION" ]]; then
+            patterns+=('mssql_py_core/mssql_py_core\..*\.so')
+          else
+            requires="$(python - "$wheel" <<'PY'
+          import sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as z:
+              meta = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
+              print(z.read(meta).decode())
+          PY
+          )"
+            if ! grep -Fxq "Requires-Dist: mssql-python-rs==$RS_VERSION" <<<"$requires"; then
+              grep '^Requires-Dist' <<<"$requires" >&2 || true
+              echo "Wheel does not pin mssql-python-rs==$RS_VERSION" >&2
+              exit 1
+            fi
+          fi
+          for pattern in "${patterns[@]}"; do
             if ! grep -Eq "$pattern" <<<"$wheel_files"; then
               echo "$wheel_files"
               echo "Wheel is missing native module matching: $pattern" >&2
@@ -316,6 +394,14 @@ jobs:
         with:
           name: whl-cp${{ matrix.python-version }}
           path: /tmp/mssql-python/dist/*.whl
+          if-no-files-found: error
+
+      - name: Upload mssql-python-rs wheel artifact
+        if: needs.resolve-upstream.outputs.has_rs_package == 'true' && matrix.python-version == '3.14'
+        uses: actions/upload-artifact@v7
+        with:
+          name: whl-rs
+          path: /tmp/mssql-python/dist-rs/*.whl
           if-no-files-found: error
 
       # The mssql-python-odbc wheel is py3-none (driver binaries only), so it is
@@ -382,6 +468,7 @@ jobs:
       - name: Verify release assets
         env:
           HAS_ODBC_PACKAGE: ${{ needs.resolve-upstream.outputs.has_odbc_package }}
+          RS_VERSION: ${{ needs.resolve-upstream.outputs.rs_version }}
         run: |
           set -euo pipefail
           expected=5
@@ -390,6 +477,14 @@ jobs:
             odbc_count="$(find dist -maxdepth 1 -type f -name 'mssql_python_odbc-*.whl' | wc -l | tr -d ' ')"
             if [[ "$odbc_count" != "1" ]]; then
               echo "Expected one mssql_python_odbc wheel, found $odbc_count" >&2
+              exit 1
+            fi
+          fi
+          if [[ -n "$RS_VERSION" ]]; then
+            expected=$((expected + 1))
+            rs_count="$(find dist -maxdepth 1 -type f -name "mssql_python_rs-${RS_VERSION}-*macosx_14_0*.whl" | wc -l | tr -d ' ')"
+            if [[ "$rs_count" != "1" ]]; then
+              echo "Expected one mssql_python_rs $RS_VERSION macOS 14 wheel, found $rs_count" >&2
               exit 1
             fi
           fi
@@ -418,10 +513,11 @@ jobs:
             echo "- Platform tag: macosx_14_0_universal2"
             echo "- Python versions: 3.10, 3.11, 3.12, 3.13, 3.14"
             echo "- Build run: $RUN_URL"
-            if compgen -G 'dist/mssql_python_odbc-*.whl' > /dev/null; then
+            if compgen -G 'dist/mssql_python_odbc-*.whl' > /dev/null || compgen -G 'dist/mssql_python_rs-*.whl' > /dev/null; then
               echo
-              echo "Install the \`mssql_python_odbc\` wheel together with the \`mssql_python\` wheel"
-              echo "for your Python version; the PyPI ODBC wheel is macOS 15+ only."
+              echo "Install the \`mssql_python\` wheel for your Python version together with the"
+              echo "\`mssql_python_odbc\` and \`mssql_python_rs\` wheels from this release; the PyPI"
+              echo "copies of those dependencies are macOS 15+ only."
             fi
             echo
             echo "Assets:"

@@ -36,8 +36,32 @@ if [ "${#wheels[@]}" -ne 1 ]; then
     exit 1
 fi
 
+wheel="${wheels[0]}"
+echo "Built mssql-py-core wheel: $(basename "$wheel")"
+
+# Since mssql-python v1.16.0, mssql_py_core ships as the standalone
+# mssql-python-rs distribution, pinned via eng/versions/mssql-python-rs.version.
+# In that layout we publish the wheel itself instead of vendoring the module.
+RS_VERSION_FILE="$MSSQL_DIR/eng/versions/mssql-python-rs.version"
+if [ -f "$RS_VERSION_FILE" ]; then
+    rs_version="$(tr -d '[:space:]' < "$RS_VERSION_FILE")"
+    case "$(basename "$wheel")" in
+        mssql_python_rs-"$rs_version"-*.whl) ;;
+        *)
+            echo "mssql-python pins mssql-python-rs==$rs_version but built $(basename "$wheel")" >&2
+            exit 1
+            ;;
+    esac
+    RS_WHEEL_DIR="${RS_WHEEL_DIR:-$MSSQL_DIR/dist-rs}"
+    mkdir -p "$RS_WHEEL_DIR"
+    cp "$wheel" "$RS_WHEEL_DIR/"
+    echo "mssql-python-rs $rs_version wheel copied to: $RS_WHEEL_DIR"
+    exit 0
+fi
+
+# Pre-v1.16.0: mssql_py_core is vendored into the mssql-python wheel.
 rm -rf /tmp/mssql_py_core_extract
-pip install "${wheels[0]}" --target /tmp/mssql_py_core_extract --no-deps
+pip install "$wheel" --target /tmp/mssql_py_core_extract --no-deps
 
 mkdir -p mssql_py_core
 cp -r /tmp/mssql_py_core_extract/mssql_py_core/ mssql_py_core/

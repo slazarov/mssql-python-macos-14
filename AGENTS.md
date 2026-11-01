@@ -36,6 +36,11 @@ PLAN.md
 5. Since v1.15.0, `mssql-python` pins a separate `mssql-python-odbc` package; CI builds it
    via `setup_odbc.py` with `ODBC_TARGET_PLATFORM_TAG=macosx_14_0_universal2` and releases it
    alongside the per-Python wheels (PyPI's copy is macOS 15+ only)
+6. Since v1.16.0, `mssql_py_core` is no longer vendored: `mssql-python` pins a separate
+   `mssql-python-rs==X` (from `eng/versions/mssql-python-rs.version`). mssql-rs has no tags,
+   so CI builds the mssql-rs `main` commit current at PyPI's upload time for `X` (verified
+   against `mssql-py-core/pyproject.toml`) and releases the abi3 `mssql_python_rs` wheel
+   (PyPI's copy is macOS 15+ only). Rust is built only on the 3.14 matrix leg in that case.
 
 ## CI/CD
 - `.github/workflows/build-macos-wheel.yml` — builds on `macos-14` runner (M1, Sonoma)
